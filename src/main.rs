@@ -13,6 +13,8 @@ use std::{cell::RefCell, env, sync::atomic::*, sync::Arc, thread, time::*};
 
 use anyhow::{bail, Result};
 
+use automerge::transaction::Transactable;
+use automerge::{Automerge, ReadDoc};
 use log::*;
 
 use url;
@@ -143,17 +145,18 @@ fn main() -> Result<()> {
     pinMode(BUTTON_4_PIN, INPUT_PULLUP);
     */
 
-    /* digitalWrite(EPD_EN, LOW);
-    digitalWrite(EPD_RST, LOW);
-    delay(50);
-    digitalWrite(EPD_RST, HIGH);
-    delay(50); */
-
-    // I can't explain why this line is necessary but it is.
-
     let sysloop = EspSystemEventLoop::take()?;
 
+    let mut doc = Automerge::new();
+    let mut tx = doc.transaction();
+    tx.put(automerge::ROOT, "hello", "Alex it works")?;
+    tx.commit();
+    let val = doc.get(automerge::ROOT, "hello")?;
+
+    let text = &*(val.unwrap().0.into_string().unwrap());
+
     waveshare_epd_hello_world(
+        text,
         peripherals.spi2,
         pins.gpio18.into(),
         pins.gpio23.into(),
@@ -198,6 +201,7 @@ fn main() -> Result<()> {
 }
 
 fn waveshare_epd_hello_world(
+    text: &str,
     spi: impl peripheral::Peripheral<P = impl spi::SpiAnyPins> + 'static,
     sclk: gpio::AnyOutputPin,
     sdo: gpio::AnyOutputPin,
@@ -257,7 +261,7 @@ fn waveshare_epd_hello_world(
     let style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
 
     // Create a text at position (20, 30) and draw it using the previously defined style
-    Text::new("Hello Rust!", Point::new(20, 30), style).draw(&mut display)?;
+    Text::new(text, Point::new(20, 30), style).draw(&mut display)?;
 
     // Display updated frame
     epd.update_frame(&mut driver, &display.buffer(), &mut delay::Ets)?;

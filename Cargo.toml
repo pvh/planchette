@@ -1,5 +1,5 @@
 [package]
-name = "more"
+name = "autodraw"
 version = "0.1.0"
 authors = ["Peter van Hardenberg <pvh@pvh.ca>"]
 edition = "2021"
