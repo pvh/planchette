@@ -1,5 +1,5 @@
 [package]
-name = "autodraw"
+name = "planchette"
 version = "0.1.0"
 authors = ["Peter van Hardenberg <pvh@pvh.ca>"]
 edition = "2021"
@@ -7,7 +7,10 @@ resolver = "2"
 rust-version = "1.66"
 
 [profile.release]
-opt-level = "s"
+opt-level = "z"
+strip = true
+lto = true
+codegen-units = 1
 
 [profile.dev]
 debug = true    # Symbols are nice and they don't increase the size on Flash

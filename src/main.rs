@@ -1,6 +1,5 @@
 #![allow(unused_imports)]
 #![allow(clippy::single_component_path_imports)]
-//#![feature(backtrace)]
 
 use core::ffi;
 
@@ -14,12 +13,8 @@ use std::{cell::RefCell, env, sync::atomic::*, sync::Arc, thread, time::*};
 use anyhow::{bail, Result};
 
 use automerge::transaction::Transactable;
-use automerge::{Automerge, ReadDoc};
+use automerge::{Automerge, ObjType, ReadDoc, ScalarValue};
 use log::*;
-
-use url;
-
-use smol;
 
 use embedded_hal::adc::OneShot;
 use embedded_hal::blocking::delay::DelayMs;
@@ -76,10 +71,6 @@ use epd_waveshare::{epd4in2::*, graphics::VarDisplay, prelude::*};
 const SSID: &str = "hardenet";
 const PASS: &str = "easytoremember";
 
-thread_local! {
-    static TLS: RefCell<u32> = RefCell::new(13);
-}
-
 fn main() -> Result<()> {
     esp_idf_sys::link_patches();
 
@@ -90,52 +81,52 @@ fn main() -> Result<()> {
     let pins = peripherals.pins;
 
     // I2C pins
-    let SDA = pins.gpio16;
-    let SCL = pins.gpio17;
+    // let sda = pins.gpio16;
+    // let scl = pins.gpio17;
 
     // SPI pins
 
     // SD card pins
-    let SD_CS = pins.gpio21;
-    let SD_EN = pins.gpio5;
+    // let sd_cs = pins.gpio21;
+    let sd_en = pins.gpio5;
 
     // E-paper pins
-    let EPD_CS = pins.gpio22;
-    let EPD_DC = pins.gpio15;
-    let EPD_BUSY = pins.gpio34;
-    let EPD_EN = pins.gpio12;
-    let EPD_RST = pins.gpio13;
+    let epd_cs = pins.gpio22;
+    let epd_dc = pins.gpio15;
+    let epd_busy = pins.gpio34;
+    let epd_en = pins.gpio12;
+    let epd_rst = pins.gpio13;
 
     // PCF8574 pins
-    let PCF_INT = pins.gpio35;
-    // let SD_CD     = pins.gpioP4; // input
+    let pcf_int = pins.gpio35;
+    // let sd_cd     = pins.gpioP4; // input
     // let EXT_GPIO1 = pins.gpioP5;
     // let EXT_GPIO2 = pins.gpioP6;
     // let EXT_GPIO3 = pins.gpioP7;
     // let PCF_I2C_ADDR = 0x38;
 
     // LiPo
-    // let CHARGE_PIN = pins.gpio36;
-    let BATT_EN = pins.gpio25;
-    // let BATT_VOLT = pins.gpio39;
+    // let charge_pin = pins.gpio36;
+    let batt_en = pins.gpio25;
+    // let batt_volt = pins.gpio39;
 
     // Buzzer
-    // let BUZR = pins.gpio26;
+    // let buzr = pins.gpio26;
 
     // Buttons
     // Top to bottom
     /*
-    let BUTTON_1_PIN = pins.gpio14;
-    let BUTTON_1_RTC_GPIO = pins.gpio16;
+    let button_1_pin = pins.gpio14;
+    let button_1_rtc_gpio = pins.gpio16;
 
-    let BUTTON_2_PIN = pins.gpio27;
-    let BUTTON_2_RTC_GPIO = pins.gpio17;
+    let button_2_pin = pins.gpio27;
+    let button_2_rtc_gpio = pins.gpio17;
 
-    let BUTTON_3_PIN = pins.gpio4;
-    let BUTTON_3_RTC_GPIO = pins.gpio10;
+    let button_3_pin = pins.gpio4;
+    let button_3_rtc_gpio = pins.gpio10;
 
-    let BUTTON_4_PIN = pins.gpio2;
-    let BUTTON_4_RTC_GPIO = pins.gpio12;
+    let button_4_pin = pins.gpio2;
+    let button_4_rtc_gpio = pins.gpio12;
     */
 
     /*
@@ -146,62 +137,62 @@ fn main() -> Result<()> {
     */
 
     let sysloop = EspSystemEventLoop::take()?;
+    let wifi = wifi(peripherals.modem, sysloop.clone())?;
+
+    let mut data = Vec::with_capacity(8192);
+    get_automerge_doc(&mut data)?;
 
     let mut doc = Automerge::new();
-    let mut tx = doc.transaction();
-    tx.put(automerge::ROOT, "hello", "Alex it works")?;
-    tx.commit();
-    let val = doc.get(automerge::ROOT, "hello")?;
+    doc.load_incremental(&data)?;
 
-    let text = &*(val.unwrap().0.into_string().unwrap());
+    let strokes = match doc.get(automerge::ROOT, "strokes")? {
+        Some((automerge::Value::Object(ObjType::List), strokes)) => strokes,
+        _ => panic!("strokes should be a list"),
+    };
+    let stroke = match doc.get(&strokes, 0)? {
+        Some((automerge::Value::Object(ObjType::List), stroke)) => stroke,
+        _ => panic!("stroke should be a list too"),
+    };
 
+    let point = match doc.get(&stroke, 0)? {
+        Some((automerge::Value::Object(ObjType::Map), point)) => point,
+        _ => panic!("point should be a map"),
+    };
+
+    let Some((value_x, _)) = doc.get(&point, "x")? else { panic!("X should exist")};
+    let Some(x) = value_x.to_i64() else { panic!("X should be a number")};
+
+    let Some((value_y, _)) = doc.get(&point, "y")? else { panic!("Y should exist")};
+    let Some(y) = value_y.to_i64() else { panic!("Y should be a number")};
+
+    info!("Position is {} {}", x, y);
     waveshare_epd_hello_world(
-        text,
+        x,
+        y,
         peripherals.spi2,
         pins.gpio18.into(),
         pins.gpio23.into(),
-        EPD_EN.into(),
-        EPD_CS.into(),
-        EPD_BUSY.into(),
-        EPD_DC.into(),
-        EPD_RST.into(),
-        SD_EN.into(),
-        BATT_EN.into(),
-        PCF_INT.into(),
+        epd_en.into(),
+        epd_cs.into(),
+        epd_busy.into(),
+        epd_dc.into(),
+        epd_rst.into(),
+        sd_en.into(),
+        batt_en.into(),
+        pcf_int.into(),
     )?;
-
-    let wifi = wifi(peripherals.modem, sysloop.clone())?;
-    test_tcp()?;
-    test_tcp_bind()?;
-
-    let _sntp = sntp::EspSntp::new_default()?;
-    info!("SNTP initialized");
-
-    test_tcp_bind_async()?;
-
-    let mutex = Arc::new((Mutex::new(None), Condvar::new()));
-
-    let httpd = httpd(mutex.clone())?;
 
     for s in 0..30 {
         info!("Shutting down in {} secs", 30 - s);
         thread::sleep(Duration::from_secs(1));
     }
 
-    drop(httpd);
-    info!("Httpd stopped");
-
-    #[cfg(not(feature = "qemu"))]
-    {
-        drop(wifi);
-        info!("Wifi stopped");
-    }
-
     Ok(())
 }
 
 fn waveshare_epd_hello_world(
-    text: &str,
+    x: i64,
+    y: i64,
     spi: impl peripheral::Peripheral<P = impl spi::SpiAnyPins> + 'static,
     sclk: gpio::AnyOutputPin,
     sdo: gpio::AnyOutputPin,
@@ -261,7 +252,12 @@ fn waveshare_epd_hello_world(
     let style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
 
     // Create a text at position (20, 30) and draw it using the previously defined style
-    Text::new(text, Point::new(20, 30), style).draw(&mut display)?;
+    Text::new(
+        "POSITIONED",
+        Point::new(x.try_into().unwrap(), y.try_into().unwrap()),
+        style,
+    )
+    .draw(&mut display)?;
 
     // Display updated frame
     epd.update_frame(&mut driver, &display.buffer(), &mut delay::Ets)?;
@@ -270,216 +266,56 @@ fn waveshare_epd_hello_world(
     Ok(())
 }
 
-fn test_tcp() -> Result<()> {
-    info!("About to open a TCP connection to 1.1.1.1 port 80");
+fn get_automerge_doc(data: &mut Vec<u8>) -> anyhow::Result<()> {
+    use embedded_svc::http::{self, client::*, status, Headers, Status};
+    use embedded_svc::io::Read;
+    use embedded_svc::utils::io;
+    use esp_idf_svc::http::client::*;
 
-    let mut stream = TcpStream::connect("one.one.one.one:80")?;
+    let url = String::from("https://google.com");
 
-    let err = stream.try_clone();
-    if let Err(err) = err {
-        info!(
-            "Duplication of file descriptors does not work (yet) on the ESP-IDF, as expected: {}",
-            err
-        );
-    }
+    info!("About to fetch content from {}", url);
 
-    stream.write_all("GET / HTTP/1.0\n\n".as_bytes())?;
+    let mut client = Client::wrap(EspHttpConnection::new(&Configuration {
+        crt_bundle_attach: Some(esp_idf_sys::esp_crt_bundle_attach),
 
-    let mut result = Vec::new();
+        ..Default::default()
+    })?);
 
-    stream.read_to_end(&mut result)?;
+    let mut response = client.get(&url)?.submit()?;
+
+    let mut body = [0_u8; 3048];
+
+    let read = io::try_read_full(&mut response, &mut body).map_err(|err| err.0)?;
 
     info!(
-        "1.1.1.1 returned:\n=================\n{}\n=================\nSince it returned something, all is OK",
-        std::str::from_utf8(&result)?);
+        "Body (truncated to 3K):\n{:?}",
+        String::from_utf8_lossy(&body[..read]).into_owned()
+    );
 
+    // Complete the response
+    while response.read(&mut body)? > 0 {}
+
+    let url = String::from("https://pvh.github.io/trail-runner/ink.amrg");
+
+    info!("About to fetch content from {}", url);
+
+    let mut client = Client::wrap(EspHttpConnection::new(&Configuration {
+        crt_bundle_attach: Some(esp_idf_sys::esp_crt_bundle_attach),
+
+        ..Default::default()
+    })?);
+
+    let mut response = client.get(&url)?.submit()?;
+
+    info!("Reading response from {}", url);
+    let read = io::try_read_full(&mut response, data).map_err(|err| err.0)?;
+
+    // Complete the response
+    while response.read(data)? > 0 {}
+
+    info!("Done fetching content from {}", url);
     Ok(())
-}
-
-fn test_tcp_bind() -> Result<()> {
-    fn test_tcp_bind_accept() -> Result<()> {
-        info!("About to bind a simple echo service to port 8080");
-
-        let listener = TcpListener::bind("0.0.0.0:8080")?;
-
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    info!("Accepted client");
-
-                    thread::spawn(move || {
-                        test_tcp_bind_handle_client(stream);
-                    });
-                }
-                Err(e) => {
-                    error!("Error: {}", e);
-                }
-            }
-        }
-
-        unreachable!()
-    }
-
-    fn test_tcp_bind_handle_client(mut stream: TcpStream) {
-        // read 20 bytes at a time from stream echoing back to stream
-        loop {
-            let mut read = [0; 128];
-
-            match stream.read(&mut read) {
-                Ok(n) => {
-                    if n == 0 {
-                        // connection was closed
-                        break;
-                    }
-                    stream.write_all(&read[0..n]).unwrap();
-                }
-                Err(err) => {
-                    panic!("{}", err);
-                }
-            }
-        }
-    }
-
-    thread::spawn(|| test_tcp_bind_accept().unwrap());
-
-    Ok(())
-}
-
-fn test_tcp_bind_async() -> anyhow::Result<()> {
-    async fn test_tcp_bind() -> smol::io::Result<()> {
-        /// Echoes messages from the client back to it.
-        async fn echo(stream: smol::Async<TcpStream>) -> smol::io::Result<()> {
-            smol::io::copy(&stream, &mut &stream).await?;
-            Ok(())
-        }
-
-        // Create a listener.
-        let listener = smol::Async::<TcpListener>::bind(([0, 0, 0, 0], 8081))?;
-
-        // Accept clients in a loop.
-        loop {
-            let (stream, peer_addr) = listener.accept().await?;
-            info!("Accepted client: {}", peer_addr);
-
-            // Spawn a task that echoes messages from the client back to it.
-            smol::spawn(echo(stream)).detach();
-        }
-    }
-
-    info!("About to bind a simple echo service to port 8081 using async (smol-rs)!");
-
-    #[allow(clippy::needless_update)]
-    {
-        esp_idf_sys::esp!(unsafe {
-            esp_idf_sys::esp_vfs_eventfd_register(&esp_idf_sys::esp_vfs_eventfd_config_t {
-                max_fds: 5,
-                ..Default::default()
-            })
-        })?;
-    }
-
-    thread::Builder::new().stack_size(4096).spawn(move || {
-        smol::block_on(test_tcp_bind()).unwrap();
-    })?;
-
-    Ok(())
-}
-
-#[allow(unused_variables)]
-fn httpd(
-    mutex: Arc<(Mutex<Option<u32>>, Condvar)>,
-) -> Result<esp_idf_svc::http::server::EspHttpServer> {
-    use embedded_svc::http::server::{
-        Connection, Handler, HandlerResult, Method, Middleware, Query, Request, Response,
-    };
-    use embedded_svc::io::Write;
-    use esp_idf_svc::http::server::{fn_handler, EspHttpConnection, EspHttpServer};
-
-    struct SampleMiddleware {}
-
-    impl<C> Middleware<C> for SampleMiddleware
-    where
-        C: Connection,
-    {
-        fn handle<'a, H>(&'a self, connection: &'a mut C, handler: &'a H) -> HandlerResult
-        where
-            H: Handler<C>,
-        {
-            let req = Request::wrap(connection);
-
-            info!("Middleware called with uri: {}", req.uri());
-
-            let connection = req.release();
-
-            if let Err(err) = handler.handle(connection) {
-                if !connection.is_response_initiated() {
-                    let mut resp = Request::wrap(connection).into_status_response(500)?;
-
-                    write!(&mut resp, "ERROR: {err}")?;
-                } else {
-                    // Nothing can be done as the error happened after the response was initiated, propagate further
-                    return Err(err);
-                }
-            }
-
-            Ok(())
-        }
-    }
-
-    struct SampleMiddleware2 {}
-
-    impl<C> Middleware<C> for SampleMiddleware2
-    where
-        C: Connection,
-    {
-        fn handle<'a, H>(&'a self, connection: &'a mut C, handler: &'a H) -> HandlerResult
-        where
-            H: Handler<C>,
-        {
-            info!("Middleware2 called");
-
-            handler.handle(connection)
-        }
-    }
-
-    let mut server = EspHttpServer::new(&Default::default())?;
-
-    server
-        .fn_handler("/", Method::Get, |req| {
-            req.into_ok_response()?
-                .write_all("Hello from Rust!".as_bytes())?;
-
-            Ok(())
-        })?
-        .fn_handler("/foo", Method::Get, |_| {
-            Result::Err("Boo, something happened!".into())
-        })?
-        .fn_handler("/bar", Method::Get, |req| {
-            req.into_response(403, Some("No permissions"), &[])?
-                .write_all("You have no permissions to access this page".as_bytes())?;
-
-            Ok(())
-        })?
-        .fn_handler("/panic", Method::Get, |_| panic!("User requested a panic!"))?
-        .handler(
-            "/middleware",
-            Method::Get,
-            SampleMiddleware {}.compose(fn_handler(|_| {
-                Result::Err("Boo, something happened!".into())
-            })),
-        )?
-        .handler(
-            "/middleware2",
-            Method::Get,
-            SampleMiddleware2 {}.compose(SampleMiddleware {}.compose(fn_handler(|req| {
-                req.into_ok_response()?
-                    .write_all("Middleware2 handler called".as_bytes())?;
-
-                Ok(())
-            }))),
-        )?;
-
-    Ok(server)
 }
 
 fn wifi(
@@ -546,20 +382,5 @@ fn wifi(
 
     info!("Wifi DHCP info: {:?}", ip_info);
 
-    ping(ip_info.subnet.gateway)?;
-
     Ok(Box::new(esp_wifi))
-}
-
-fn ping(ip: ipv4::Ipv4Addr) -> Result<()> {
-    info!("About to do some pings for {:?}", ip);
-
-    let ping_summary = ping::EspPing::default().ping(ip, &Default::default())?;
-    if ping_summary.transmitted != ping_summary.received {
-        bail!("Pinging IP {} resulted in timeouts", ip);
-    }
-
-    info!("Pinging done");
-
-    Ok(())
 }
